@@ -43,7 +43,6 @@ from napari.qt.threading import WorkerBaseSignals
 # Qt
 from qtpy.QtCore import Signal
 
-
 from napari_cellseg3d import utils
 from napari_cellseg3d import log_utility
 
@@ -228,6 +227,7 @@ class InferenceWorker(GeneratorWorker):
         self.instance_params = instance
         self.use_window = use_window
         self.window_infer_size = window_infer_size
+        self.window_overlap_percentage = (0.8,)
         self.keep_on_cpu = keep_on_cpu
         self.stats_to_csv = stats_csv
         """These attributes are all arguments of :py:func:~inference, please see that for reference"""
@@ -339,31 +339,26 @@ class InferenceWorker(GeneratorWorker):
         # if self.device =="cuda": # TODO : fix mem alloc, this does not work it seems
         # torch.backends.cudnn.benchmark = False
 
-        # TODO : better solution than loading first image always ?
-        data_check = LoadImaged(keys=["image"])(images_dict[0])
-        # print(data)
-        check = data_check["image"].shape
-        # print(check)
-        # TODO remove
-        # z_aniso = 5 / 1.5
-        # if zoom is not None :
-        #     pad = utils.get_padding_dim(check, anisotropy_factor=zoom)
-        # else:
         self.log("\nChecking dimensions...")
+        data_check = LoadImaged(keys=["image"])(images_dict[0])
+        check = data_check["image"].shape
         pad = utils.get_padding_dim(check)
-        # print(pad)
-        dims = self.model_dict["segres_size"]
+
+        dims = self.model_dict["model_input_size"]
 
         model = self.model_dict["class"].get_net()
         if self.model_dict["name"] == "SegResNet":
-            model = self.model_dict["class"].get_net()(
+            model = self.model_dict["class"].get_net(
                 input_image_size=[
                     dims,
                     dims,
                     dims,
-                ],  # TODO FIX ! find a better way & remove model-specific code
-                out_channels=1,
-                # dropout_prob=0.3,
+                ]
+            )
+        elif self.model_dict["name"] == "SwinUNetR":
+            model = self.model_dict["class"].get_net(
+                img_size=[dims, dims, dims],
+                use_checkpoint=False,
             )
 
         self.log_parameters()
@@ -372,18 +367,29 @@ class InferenceWorker(GeneratorWorker):
 
         # print("FILEPATHS PRINT")
         # print(self.images_filepaths)
-
-        load_transforms = Compose(
-            [
-                LoadImaged(keys=["image"]),
-                # AddChanneld(keys=["image"]), #already done
-                EnsureChannelFirstd(keys=["image"]),
-                # Orientationd(keys=["image"], axcodes="PLI"),
-                # anisotropic_transform,
-                SpatialPadd(keys=["image"], spatial_size=pad),
-                EnsureTyped(keys=["image"]),
-            ]
-        )
+        if self.use_window:
+            load_transforms = Compose(
+                [
+                    LoadImaged(keys=["image"]),
+                    # AddChanneld(keys=["image"]), #already done
+                    EnsureChannelFirstd(keys=["image"]),
+                    # Orientationd(keys=["image"], axcodes="PLI"),
+                    # anisotropic_transform,
+                    EnsureTyped(keys=["image"]),
+                ]
+            )
+        else:
+            load_transforms = Compose(
+                [
+                    LoadImaged(keys=["image"]),
+                    # AddChanneld(keys=["image"]), #already done
+                    EnsureChannelFirstd(keys=["image"]),
+                    # Orientationd(keys=["image"], axcodes="PLI"),
+                    # anisotropic_transform,
+                    SpatialPadd(keys=["image"], spatial_size=pad),
+                    EnsureTyped(keys=["image"]),
+                ]
+            )
 
         if not self.transforms["thresh"][0]:
             post_process_transforms = EnsureType()
@@ -437,6 +443,7 @@ class InferenceWorker(GeneratorWorker):
                 # print(inputs.shape)
 
                 inputs = inputs.to("cpu")
+                print(inputs.shape)
 
                 model_output = lambda inputs: post_process_transforms(
                     self.model_dict["class"].get_output(model, inputs)
@@ -449,9 +456,10 @@ class InferenceWorker(GeneratorWorker):
 
                 if self.use_window:
                     window_size = self.window_infer_size
+                    window_overlap = self.window_overlap_percentage
                 else:
                     window_size = None
-
+                    window_overlap = 0.25
                 outputs = sliding_window_inference(
                     inputs,
                     roi_size=window_size,
@@ -459,12 +467,12 @@ class InferenceWorker(GeneratorWorker):
                     predictor=model_output,
                     sw_device=self.device,
                     device=dataset_device,
+                    overlap=window_overlap,
                 )
-
                 out = outputs.detach().cpu()
                 # del outputs # TODO fix memory ?
                 # outputs = None
-
+                print(out.shape)
                 if self.transforms["zoom"][0]:
                     zoom = self.transforms["zoom"][1]
                     anisotropic_transform = Zoom(
@@ -474,9 +482,11 @@ class InferenceWorker(GeneratorWorker):
                     )
                     out = anisotropic_transform(out[0])
 
-                out = post_process_transforms(out)
+                # out = post_process_transforms(out)
                 out = np.array(out).astype(np.float32)
+                print(out.shape)
                 out = np.squeeze(out)
+                print(out.shape)
                 to_instance = out  # avoid post processing since thresholding is done there anyway
 
                 # batch_len = out.shape[1]
@@ -820,10 +830,19 @@ class TrainingWorker(GeneratorWorker):
             else:
                 size = check
             print(f"Size of image : {size}")
-            model = model_class.get_net()(
+            model = model_class.get_net(
                 input_image_size=utils.get_padding_dim(size),
-                out_channels=1,
                 dropout_prob=0.3,
+            )
+        elif model_name == "SwinUNetR":
+            if self.sampling:
+                size = self.sample_size
+            else:
+                size = check
+            print(f"Size of image : {size}")
+            model = model_class.get_net(
+                img_size=utils.get_padding_dim(size),
+                use_checkpoint=True,
             )
         else:
             model = model_class.get_net()  # get an instance of the model

@@ -97,9 +97,11 @@ class Inferer(ModelFramework):
         ######################
         ######################
         # TODO : better way to handle SegResNet size reqs ?
-        self.segres_size = ui.IntIncrementCounter(min=1, max=1024, default=128)
+        self.model_input_size = ui.IntIncrementCounter(
+            min=1, max=1024, default=128
+        )
         self.model_choice.currentIndexChanged.connect(
-            self.toggle_display_segres_size
+            self.toggle_display_model_input_size
         )
         self.model_choice.setCurrentIndex(0)
 
@@ -132,6 +134,7 @@ class Inferer(ModelFramework):
         self.window_infer_box.clicked.connect(self.toggle_display_window_size)
 
         sizes_window = ["8", "16", "32", "64", "128", "256", "512"]
+
         self.window_size_choice = ui.DropdownMenu(
             sizes_window, label="Window size"
         )
@@ -209,8 +212,8 @@ class Inferer(ModelFramework):
         self.show_original_checkbox.setToolTip(
             "Displays the image used for inference in the viewer"
         )
-        self.segres_size.setToolTip(
-            "Image size on which the SegResNet has been trained (default : 128)"
+        self.model_input_size.setToolTip(
+            "Image size on which the model has been trained (default : 128)"
         )
 
         thresh_desc = "Thresholding : all values in the image below the chosen probability threshold will be set to 0, and all others to 1."
@@ -224,6 +227,7 @@ class Inferer(ModelFramework):
         self.window_size_choice.setToolTip(
             "Size of the window to run inference with (in pixels)"
         )
+
         self.keep_data_on_cpu_box.setToolTip(
             "If enabled, data will be kept on the RAM rather than the VRAM.\nCan avoid out of memory issues with CUDA"
         )
@@ -262,11 +266,14 @@ class Inferer(ModelFramework):
             warnings.warn("Image and label paths are not correctly set")
             return False
 
-    def toggle_display_segres_size(self):
-        if self.model_choice.currentText() == "SegResNet":
-            self.segres_size.setVisible(True)
+    def toggle_display_model_input_size(self):
+        if (
+            self.model_choice.currentText() == "SegResNet"
+            or self.model_choice.currentText() == "SwinUNetR"
+        ):
+            self.model_input_size.setVisible(True)
         else:
-            self.segres_size.setVisible(False)
+            self.model_input_size.setVisible(False)
 
     def toggle_display_number(self):
         """Shows the choices for viewing results depending on whether :py:attr:`self.view_checkbox` is checked"""
@@ -373,7 +380,7 @@ class Inferer(ModelFramework):
                 self.model_choice,
                 self.custom_weights_choice,
                 self.weights_path_container,
-                self.segres_size,
+                self.model_input_size,
             ],
         )
         self.weights_path_container.setVisible(False)
@@ -526,7 +533,7 @@ class Inferer(ModelFramework):
             model_dict = {  # gather model info
                 "name": model_key,
                 "class": self.get_model(model_key),
-                "segres_size": self.segres_size.value(),
+                "model_input_size": self.model_input_size.value(),
             }
 
             if self.custom_weights_choice.isChecked():
